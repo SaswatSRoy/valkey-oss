@@ -1297,14 +1297,78 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
             hashtableInitIterator(&iter, ht, 0);
             void *next;
 
+            /* === BEGIN DEBUG_ISSUE_4149 === */
+            size_t dbg_initial_asize = asize;
+            size_t dbg_ht_mem = hashtableMemUsage(ht);
+            /* === END DEBUG_ISSUE_4149 === */
+
             asize += hashtableMemUsage(ht);
             while (hashtableNext(&iter, &next) && samples < sample_size) {
                 elesize += entryMemUsage(next);
                 samples++;
             }
             hashtableCleanupIterator(&iter);
+
+            /* === BEGIN DEBUG_ISSUE_4149 === */
+            size_t dbg_raw_elesize = elesize;
+            size_t dbg_samples = samples;
+            size_t dbg_ht_size = hashtableSize(ht);
+            double dbg_avg_entry = samples ? (double)elesize / samples * hashtableSize(ht) : 0;
+            int dbg_vset_valid = vsetIsValid(volatile_fields);
+            size_t dbg_vset_mem = dbg_vset_valid ? vsetMemUsage(volatile_fields) : 0;
+            /* Decode vset bucket type from tagged pointer (matches vset.c internals).
+             * -1=NONE, 1=SINGLE, 2=VECTOR, 4=HT, 6=RAX, -2=NULL */
+            int dbg_vset_bucket_type = -2;
+            if (volatile_fields && *(void **)volatile_fields) {
+                uintptr_t bits = (uintptr_t)(*(void **)volatile_fields);
+                if ((void *)bits == (void *)(uintptr_t)-1)
+                    dbg_vset_bucket_type = -1; /* NONE */
+                else if (bits & 0x1)
+                    dbg_vset_bucket_type = 1; /* SINGLE */
+                else
+                    dbg_vset_bucket_type = (int)(bits & 0x7UL); /* VECTOR=2, HT=4, RAX=6 */
+            }
+            /* === END DEBUG_ISSUE_4149 === */
+
             if (samples) asize += (double)elesize / samples * hashtableSize(ht);
             if (vsetIsValid(volatile_fields)) asize += vsetMemUsage(volatile_fields);
+
+            /* === BEGIN DEBUG_ISSUE_4149 === */
+            {
+                struct dbg_hashtable {
+                    void *type;
+                    ssize_t rehash_idx;
+                    void *tables[2];
+                    size_t used[2];
+                    int8_t bucket_exp[2];
+                    int16_t pause_rehash;
+                    int16_t pause_auto_shrink;
+                    size_t child_buckets[2];
+                };
+                struct dbg_hashtable *d_ht = (struct dbg_hashtable *)ht;
+
+                size_t dbg_num_buckets_0 = d_ht->bucket_exp[0] == -1 ? 0 : (size_t)1 << d_ht->bucket_exp[0];
+                size_t dbg_num_buckets_1 = d_ht->bucket_exp[1] == -1 ? 0 : (size_t)1 << d_ht->bucket_exp[1];
+                size_t dbg_total_buckets = dbg_num_buckets_0 + dbg_num_buckets_1 +
+                                           d_ht->child_buckets[0] + d_ht->child_buckets[1];
+                const char *keyname = key ? (const char *)objectGetVal(key) : "(nil)";
+                serverLog(LL_WARNING,
+                          "DEBUG_ISSUE_4149 objectComputeSize key=%s "
+                          "initial_asize=%zu ht_mem=%zu raw_elesize=%zu samples=%zu "
+                          "ht_size=%zu avg_entry_contrib=%.1f vset_valid=%d "
+                          "vset_bucket_type=%d vset_mem=%zu "
+                          "bucket_exp[0]=%d bucket_exp[1]=%d "
+                          "child_buckets[0]=%zu child_buckets[1]=%zu "
+                          "computed_bucket_count=%zu final_asize=%zu",
+                          keyname, dbg_initial_asize, dbg_ht_mem,
+                          dbg_raw_elesize, dbg_samples, dbg_ht_size,
+                          dbg_avg_entry, dbg_vset_valid,
+                          dbg_vset_bucket_type, dbg_vset_mem,
+                          (int)d_ht->bucket_exp[0], (int)d_ht->bucket_exp[1],
+                          d_ht->child_buckets[0], d_ht->child_buckets[1],
+                          dbg_total_buckets, asize);
+            }
+            /* === END DEBUG_ISSUE_4149 === */
         } else {
             serverPanic("Unknown hash encoding");
         }

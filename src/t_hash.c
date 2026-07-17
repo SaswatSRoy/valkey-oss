@@ -855,6 +855,66 @@ robj *hashTypeDup(robj *o) {
                 hashTypeTrackEntry(hobj, entry);
         }
         hashTypeResetIterator(&hi);
+        
+        /* === BEGIN DEBUG_ISSUE_4149 === */
+        {
+            struct dbg_hashtable {
+                void *type;
+                ssize_t rehash_idx;
+                void *tables[2];
+                size_t used[2];
+                int8_t bucket_exp[2];
+                int16_t pause_rehash;
+                int16_t pause_auto_shrink;
+                size_t child_buckets[2];
+            };
+            
+            hashtable *src_ht = objectGetVal(o);
+            hashtable *dst_ht = objectGetVal(hobj);
+            struct dbg_hashtable *d_src = (struct dbg_hashtable *)src_ht;
+            struct dbg_hashtable *d_dst = (struct dbg_hashtable *)dst_ht;
+            
+            vset *src_vset = hashtableMetadata(src_ht);
+            vset *dst_vset = hashtableMetadata(dst_ht);
+            
+            int src_vset_valid = vsetIsValid(src_vset);
+            int dst_vset_valid = vsetIsValid(dst_vset);
+            
+            int src_vset_type = -2, dst_vset_type = -2;
+            if (src_vset && *(void **)src_vset) {
+                uintptr_t bits = (uintptr_t)(*(void **)src_vset);
+                if ((void *)bits == (void *)(uintptr_t)-1) src_vset_type = -1;
+                else if (bits & 0x1) src_vset_type = 1;
+                else src_vset_type = (int)(bits & 0x7UL);
+            }
+            if (dst_vset && *(void **)dst_vset) {
+                uintptr_t bits = (uintptr_t)(*(void **)dst_vset);
+                if ((void *)bits == (void *)(uintptr_t)-1) dst_vset_type = -1;
+                else if (bits & 0x1) dst_vset_type = 1;
+                else dst_vset_type = (int)(bits & 0x7UL);
+            }
+            
+            serverLog(LL_WARNING,
+                      "DEBUG_ISSUE_4149 hashTypeDup SRC size=%zu "
+                      "bucket_exp[0]=%d bucket_exp[1]=%d "
+                      "child_buckets[0]=%zu child_buckets[1]=%zu "
+                      "vset_valid=%d vset_type=%d",
+                      hashtableSize(src_ht),
+                      (int)d_src->bucket_exp[0], (int)d_src->bucket_exp[1],
+                      d_src->child_buckets[0], d_src->child_buckets[1],
+                      src_vset_valid, src_vset_type);
+                      
+            serverLog(LL_WARNING,
+                      "DEBUG_ISSUE_4149 hashTypeDup DST size=%zu "
+                      "bucket_exp[0]=%d bucket_exp[1]=%d "
+                      "child_buckets[0]=%zu child_buckets[1]=%zu "
+                      "vset_valid=%d vset_type=%d",
+                      hashtableSize(dst_ht),
+                      (int)d_dst->bucket_exp[0], (int)d_dst->bucket_exp[1],
+                      d_dst->child_buckets[0], d_dst->child_buckets[1],
+                      dst_vset_valid, dst_vset_type);
+        }
+        /* === END DEBUG_ISSUE_4149 === */
     } else {
         serverPanic("Unknown hash encoding");
     }
